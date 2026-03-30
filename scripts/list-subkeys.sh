@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Keep the interface discoverable for operators who only need a quick inventory
+# of subkeys and expiration dates.
 usage() {
   cat <<USAGE
 List subkeys of a master key and show expiration dates.
@@ -14,6 +16,7 @@ MASTER_FPR=""
 GNUPGHOME_DIR="${GNUPGHOME:-$HOME/.gnupg}"
 FORMAT="table"
 
+# Parse flags before running any GnuPG commands.
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --master-fpr) MASTER_FPR="$2"; shift 2 ;;
@@ -30,8 +33,11 @@ if [[ -z "$MASTER_FPR" ]]; then
   exit 1
 fi
 
+# List against the requested keyring rather than the user's default environment.
 export GNUPGHOME="$GNUPGHOME_DIR"
 
+# Transform the colon-delimited GnuPG output into simple CSV-like rows that are
+# easier to reformat in Bash. The first UID is carried along for display.
 rows="$(gpg --list-keys --with-colons "$MASTER_FPR" | awk -F: '
   $1=="uid" && uid=="" {uid=$10}
   $1=="sub" {
@@ -44,6 +50,8 @@ rows="$(gpg --list-keys --with-colons "$MASTER_FPR" | awk -F: '
   }
 ')"
 
+# Emit either machine-friendly CSV or a padded human-readable table from the same
+# intermediate row format.
 if [[ "$FORMAT" == "csv" ]]; then
   echo "keyid,fingerprint,created,expires,usage,flags,uid"
   while IFS=, read -r keyid fpr created expires caps flags uid; do
