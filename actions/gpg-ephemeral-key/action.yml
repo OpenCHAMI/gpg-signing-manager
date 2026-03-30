@@ -1,0 +1,80 @@
+name: 'Generate and Sign Ephemeral GPG Key'
+description: 'Creates an ephemeral GPG key per build and signs it with a repo-scoped subkey'
+
+inputs:
+  subkey-armored:
+    description: 'Base64-encoded GPG subkey'
+    required: true
+  name:
+    description: 'Name-Real value for the ephemeral key'
+    required: false
+    default: 'Ephemeral Key'
+  comment:
+    description: 'Name-Comment value for the ephemeral key'
+    required: false
+    default: ''
+  email:
+    description: 'Name-Email value for the ephemeral key'
+    required: false
+    default: 'ci@build.local'
+  expire:
+    description: 'Ephemeral key expiration'
+    required: false
+    default: '1d'
+
+outputs:
+  ephemeral-fingerprint:
+    description: 'Fingerprint of the generated ephemeral key'
+    value: ${{ steps.fpr.outputs.fingerprint }}
+  ephemeral-public-key:
+    description: 'Base64-encoded ASCII-armored ephemeral public key'
+    value: ${{ steps.export.outputs.pubkey }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install GnuPG and RPM tools
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gnupg2 rpm
+
+    - name: Import repo subkey
+      shell: bash
+      run: |
+        echo '${{ inputs.subkey-armored }}' | base64 -d > repo-subkey.asc
+        gpg --batch --import repo-subkey.asc
+
+    - name: Generate ephemeral key
+      shell: bash
+      run: |
+        cat > keygen.conf <<KEYCONF
+        %no-protection
+        Key-Type: RSA
+        Key-Length: 3072
+        Name-Real: ${{ inputs.name }}
+        Name-Comment: ${{ inputs.comment }}
+        Name-Email: ${{ inputs.email }}
+        Expire-Date: ${{ inputs.expire }}
+        %commit
+        KEYCONF
+        gpg --batch --generate-key keygen.conf
+
+    - name: Discover ephemeral fingerprint
+      id: fpr
+      shell: bash
+      run: |
+        fpr=$(gpg --list-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
+        echo "fingerprint=${fpr}" >> "$GITHUB_OUTPUT"
+
+    - name: Sign ephemeral key with repo subkey
+      shell: bash
+      run: |
+        gpg --batch --yes --quick-sign-key '${{ steps.fpr.outputs.fingerprint }}'
+
+    - name: Export ephemeral public key
+      id: export
+      shell: bash
+      run: |
+        gpg --armor --export '${{ steps.fpr.outputs.fingerprint }}' > ephemeral-public.asc
+        echo "pubkey=$(base64 < ephemeral-public.asc | tr -d '\n')" >> "$GITHUB_OUTPUT"

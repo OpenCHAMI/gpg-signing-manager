@@ -1,0 +1,33 @@
+name: Subkey expiry check
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  check-subkeys:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Install GnuPG
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnupg2
+
+      - name: Import master public key bundle
+        env:
+          MASTER_PUBLIC_ASC: ${{ secrets.MASTER_PUBLIC_ASC }}
+        run: |
+          test -n "$MASTER_PUBLIC_ASC"
+          printf '%s' "$MASTER_PUBLIC_ASC" > master-public.asc
+          gpg --batch --import master-public.asc
+
+      - name: Fail when a subkey expires within 30 days
+        env:
+          MASTER_FPR: ${{ secrets.MASTER_FPR }}
+        run: |
+          chmod +x scripts/check-subkey-expiry.sh
+          ./scripts/check-subkey-expiry.sh --master-fpr "$MASTER_FPR" --threshold-days 30
