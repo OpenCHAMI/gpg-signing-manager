@@ -15,7 +15,7 @@ Options:
   --master-fpr FPR            Master key fingerprint (required)
   --repo REPO                 Repository name, e.g. OpenCHAMI/magellan (required)
   --expire EXPIRY             Subkey expiration, default: 1y
-  --gnupghome DIR             GnuPG home directory, default: ~/.gnupg
+  --gnupghome DIR             GnuPG home directory, default: ./gnupg-master
   --outdir DIR                Output directory, default: ./out/<repo>
   --passphrase-file FILE      Read master key passphrase from FILE
   --help                      Show this help text
@@ -27,10 +27,21 @@ Outputs:
 USAGE
 }
 
+format_epoch_utc() {
+  local epoch="$1"
+  local format="$2"
+
+  if date -u -r "$epoch" "+$format" >/dev/null 2>&1; then
+    date -u -r "$epoch" "+$format"
+  else
+    date -u -d "@$epoch" "+$format"
+  fi
+}
+
 MASTER_FPR=""
 REPO=""
 EXPIRE="1y"
-GNUPGHOME_DIR="${GNUPGHOME:-$HOME/.gnupg}"
+GNUPGHOME_DIR="${GNUPGHOME:-$(pwd)/gnupg-master}"
 OUTDIR=""
 PASSPHRASE_FILE=""
 
@@ -76,6 +87,7 @@ fi
 # Ensure the requested master secret key is available before trying to edit it.
 if ! gpg --list-secret-keys "$MASTER_FPR" >/dev/null 2>&1; then
   echo "Master key $MASTER_FPR not found in $GNUPGHOME_DIR" >&2
+  echo "Pass --gnupghome explicitly if the master key was created in a different keyring." >&2
   exit 1
 fi
 
@@ -93,7 +105,12 @@ save
 CMDS
 
 # Add the new subkey to the existing master key.
-gpg --batch --command-file "$CMD_FILE" --status-fd 1 --edit-key "${PASS_ARGS[@]}" "$MASTER_FPR" >/dev/null
+edit_key_cmd=(gpg --batch --command-file "$CMD_FILE" --status-fd 1 --edit-key)
+if [[ -n "$PASSPHRASE_FILE" ]]; then
+  edit_key_cmd+=("${PASS_ARGS[@]}")
+fi
+edit_key_cmd+=("$MASTER_FPR")
+"${edit_key_cmd[@]}" >/dev/null
 
 # Scan the secret key listing and keep the fingerprint from the last subkey entry,
 # which corresponds to the subkey created by the edit session above.
@@ -117,7 +134,12 @@ META_FILE="$OUTDIR/${safe_repo}-metadata.txt"
 
 # Export the minimum secret material needed by CI, plus a base64 version that can
 # be pasted directly into `gh secret set` or the GitHub web UI.
-gpg --armor --export-secret-subkeys "${PASS_ARGS[@]}" "$NEW_SUBKEY_FPR!" > "$SECRET_FILE"
+export_subkeys_cmd=(gpg --armor --export-secret-subkeys)
+if [[ -n "$PASSPHRASE_FILE" ]]; then
+  export_subkeys_cmd+=("${PASS_ARGS[@]}")
+fi
+export_subkeys_cmd+=("$NEW_SUBKEY_FPR!")
+"${export_subkeys_cmd[@]}" > "$SECRET_FILE"
 base64 < "$SECRET_FILE" | tr -d '\n' > "$B64_FILE"
 gpg --armor --export "$MASTER_FPR" > "$PUBLIC_FILE"
 
@@ -130,7 +152,7 @@ EXPIRY_EPOCH="$(gpg --list-keys --with-colons "$MASTER_FPR" | awk -F: -v fpr="$N
 ')"
 EXPIRY_HUMAN="never"
 if [[ -n "$EXPIRY_EPOCH" && "$EXPIRY_EPOCH" != "" && "$EXPIRY_EPOCH" != "0" ]]; then
-  EXPIRY_HUMAN="$(date -u -d "@$EXPIRY_EPOCH" +"%Y-%m-%dT%H:%M:%SZ")"
+  EXPIRY_HUMAN="$(format_epoch_utc "$EXPIRY_EPOCH" "%Y-%m-%dT%H:%M:%SZ")"
 fi
 
 # Write a small manifest so automation or auditors can recover the relevant file

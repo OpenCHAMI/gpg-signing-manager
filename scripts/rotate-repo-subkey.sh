@@ -15,7 +15,7 @@ Options:
   --old-subkey-fpr FPR        Existing subkey fingerprint to revoke (required)
   --repo REPO                 Repository name (required)
   --expire EXPIRY             New subkey expiration, default: 1y
-  --gnupghome DIR             GnuPG home directory, default: ~/.gnupg
+  --gnupghome DIR             GnuPG home directory, default: ./gnupg-master
   --outdir DIR                Output directory, default: ./out/<repo>-rotation
   --passphrase-file FILE      Read master key passphrase from FILE
   --help                      Show this help text
@@ -26,7 +26,7 @@ MASTER_FPR=""
 OLD_SUBKEY_FPR=""
 REPO=""
 EXPIRE="1y"
-GNUPGHOME_DIR="${GNUPGHOME:-$HOME/.gnupg}"
+GNUPGHOME_DIR="${GNUPGHOME:-$(pwd)/gnupg-master}"
 OUTDIR=""
 PASSPHRASE_FILE=""
 
@@ -94,7 +94,12 @@ save
 CMDS
 
 # Apply the revocation to the existing subkey.
-gpg --batch --command-file "$CMD_FILE" --status-fd 1 --edit-key "${PASS_ARGS[@]}" "$MASTER_FPR" >/dev/null
+revoke_subkey_cmd=(gpg --batch --command-file "$CMD_FILE" --status-fd 1 --edit-key)
+if [[ -n "$PASSPHRASE_FILE" ]]; then
+  revoke_subkey_cmd+=("${PASS_ARGS[@]}")
+fi
+revoke_subkey_cmd+=("$MASTER_FPR")
+"${revoke_subkey_cmd[@]}" >/dev/null
 
 # Reuse the creation script to mint the replacement subkey so rotation and fresh
 # creation share the same export and metadata behavior.

@@ -18,6 +18,17 @@ Options:
 USAGE
 }
 
+format_epoch_utc() {
+  local epoch="$1"
+  local format="$2"
+
+  if date -u -r "$epoch" "+$format" >/dev/null 2>&1; then
+    date -u -r "$epoch" "+$format"
+  else
+    date -u -d "@$epoch" "+$format"
+  fi
+}
+
 MASTER_FPR=""
 GNUPGHOME_DIR="${GNUPGHOME:-$HOME/.gnupg}"
 THRESHOLD_DAYS=30
@@ -57,7 +68,7 @@ while IFS=, read -r keyid fpr expires uid; do
     echo "Subkey expiring soon:"
     echo "  keyid:       $keyid"
     echo "  fingerprint: $fpr"
-    echo "  expires:     $(date -u -d "@$expires" +"%Y-%m-%dT%H:%M:%SZ")"
+    echo "  expires:     $(format_epoch_utc "$expires" "%Y-%m-%dT%H:%M:%SZ")"
     echo "  uid:         $uid"
   fi
 done < <(gpg --list-keys --with-colons "$MASTER_FPR" | awk -F: '

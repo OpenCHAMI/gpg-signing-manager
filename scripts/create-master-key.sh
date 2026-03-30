@@ -24,6 +24,7 @@ Notes:
   * This creates a certify-only primary key and a sign-only admin subkey.
   * Keep the private material offline.
   * The exported public key can be distributed for package verification.
+  * On success, the script prints the master fingerprint to stdout.
 USAGE
 }
 
@@ -71,11 +72,11 @@ if [[ -n "$PASSPHRASE_FILE" ]]; then
   KEYGEN_PASSPHRASE_LINE="Passphrase: $(cat "$PASSPHRASE_FILE")"
 fi
 
-UID="${NAME}"
+KEY_UID="${NAME}"
 if [[ -n "$COMMENT" ]]; then
-  UID+=" (${COMMENT})"
+  KEY_UID+=" (${COMMENT})"
 fi
-UID+=" <${EMAIL}>"
+KEY_UID+=" <${EMAIL}>"
 
 # GnuPG batch generation is driven by a control file. We write the exact recipe
 # into the output directory so the ceremony artifacts are easy to inspect later.
@@ -102,7 +103,12 @@ if [[ -f "$GNUPGHOME/pubring.kbx" ]]; then
 fi
 
 # Generate the primary certify-only key plus its initial signing subkey.
-gpg --batch --generate-key "${PASSPHRASE_ARGS[@]}" "$OUTDIR/master-key.batch"
+generate_key_cmd=(gpg --batch --generate-key)
+if [[ -n "$PASSPHRASE_FILE" ]]; then
+  generate_key_cmd+=("${PASSPHRASE_ARGS[@]}")
+fi
+generate_key_cmd+=("$OUTDIR/master-key.batch")
+"${generate_key_cmd[@]}"
 
 # Capture the new primary fingerprint from the freshly created secret keyring so
 # later exports target the exact key that was just created.
@@ -115,19 +121,32 @@ fi
 PUBKEY_FILE="$OUTDIR/master-public.asc"
 SECKEY_FILE="$OUTDIR/master-secret-backup.asc"
 REVOCATION_FILE="$OUTDIR/${MASTER_FPR}-revocation.asc"
+AUTO_REVOCATION_FILE="$GNUPGHOME/openpgp-revocs.d/${MASTER_FPR}.rev"
 
 # Export the public key for distribution, the full secret key for offline backup,
 # and a revocation certificate so the hierarchy can be retired later if needed.
 gpg --armor --export "$MASTER_FPR" > "$PUBKEY_FILE"
-gpg --armor --export-secret-keys "${PASSPHRASE_ARGS[@]}" "$MASTER_FPR" > "$SECKEY_FILE"
+export_secret_cmd=(gpg --armor --export-secret-keys)
+if [[ -n "$PASSPHRASE_FILE" ]]; then
+  export_secret_cmd+=("${PASSPHRASE_ARGS[@]}")
+fi
+export_secret_cmd+=("$MASTER_FPR")
+"${export_secret_cmd[@]}" > "$SECKEY_FILE"
 
-# `--gen-revoke` is interactive even in batch mode, so answer the single
-# confirmation prompt with `y` and write the certificate to a deterministic path.
-echo y | gpg --batch --yes --pinentry-mode loopback "${PASSPHRASE_ARGS[@]}" --output "$REVOCATION_FILE" --gen-revoke "$MASTER_FPR" >/dev/null
+# Modern GnuPG writes a revocation certificate into openpgp-revocs.d during key
+# creation. Copy it into the output directory and strip the leading `:` guards so
+# the exported file is immediately usable if it ever needs to be imported.
+if [[ ! -f "$AUTO_REVOCATION_FILE" ]]; then
+  echo "Expected auto-generated revocation certificate at $AUTO_REVOCATION_FILE" >&2
+  exit 1
+fi
+sed 's/^://' "$AUTO_REVOCATION_FILE" > "$REVOCATION_FILE"
 
-cat <<INFO
+# Print the ceremony summary to stderr so command substitution can capture just
+# the fingerprint from stdout without losing the operator-facing details.
+cat >&2 <<INFO
 Created master key:
-  UID:          $UID
+  UID:          $KEY_UID
   Fingerprint:  $MASTER_FPR
 
 Files:
@@ -137,3 +156,5 @@ Files:
 
 Store the secret backup and revocation certificate offline.
 INFO
+
+printf '%s\n' "$MASTER_FPR"

@@ -12,6 +12,17 @@ Usage:
 USAGE
 }
 
+format_epoch_utc() {
+  local epoch="$1"
+  local format="$2"
+
+  if date -u -r "$epoch" "+$format" >/dev/null 2>&1; then
+    date -u -r "$epoch" "+$format"
+  else
+    date -u -d "@$epoch" "+$format"
+  fi
+}
+
 MASTER_FPR=""
 GNUPGHOME_DIR="${GNUPGHOME:-$HOME/.gnupg}"
 FORMAT="table"
@@ -55,9 +66,9 @@ rows="$(gpg --list-keys --with-colons "$MASTER_FPR" | awk -F: '
 if [[ "$FORMAT" == "csv" ]]; then
   echo "keyid,fingerprint,created,expires,usage,flags,uid"
   while IFS=, read -r keyid fpr created expires caps flags uid; do
-    created_h="$(date -u -d "@$created" +"%Y-%m-%dT%H:%M:%SZ")"
+    created_h="$(format_epoch_utc "$created" "%Y-%m-%dT%H:%M:%SZ")"
     if [[ -n "$expires" && "$expires" != "0" ]]; then
-      expires_h="$(date -u -d "@$expires" +"%Y-%m-%dT%H:%M:%SZ")"
+      expires_h="$(format_epoch_utc "$expires" "%Y-%m-%dT%H:%M:%SZ")"
     else
       expires_h="never"
     fi
@@ -66,9 +77,9 @@ if [[ "$FORMAT" == "csv" ]]; then
 else
   printf '%-18s %-42s %-20s %-20s %-8s %-6s %s\n' "KEYID" "FINGERPRINT" "CREATED" "EXPIRES" "USAGE" "FLAGS" "UID"
   while IFS=, read -r keyid fpr created expires caps flags uid; do
-    created_h="$(date -u -d "@$created" +"%Y-%m-%d")"
+    created_h="$(format_epoch_utc "$created" "%Y-%m-%d")"
     if [[ -n "$expires" && "$expires" != "0" ]]; then
-      expires_h="$(date -u -d "@$expires" +"%Y-%m-%d")"
+      expires_h="$(format_epoch_utc "$expires" "%Y-%m-%d")"
     else
       expires_h="never"
     fi
