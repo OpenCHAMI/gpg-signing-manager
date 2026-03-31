@@ -16,8 +16,25 @@ runs:
     - name: Install GnuPG
       shell: bash
       run: |
-        sudo apt-get update
-        sudo apt-get install -y gnupg
+        if command -v gpg >/dev/null 2>&1; then
+          exit 0
+        fi
+
+        if command -v sudo >/dev/null 2>&1; then
+          SUDO=sudo
+        else
+          SUDO=
+        fi
+
+        if command -v apt-get >/dev/null 2>&1; then
+          $SUDO apt-get update
+          $SUDO apt-get install -y gnupg2
+        elif command -v dnf >/dev/null 2>&1; then
+          $SUDO dnf install -y gnupg2
+        else
+          echo 'Unsupported package manager: need apt-get or dnf' >&2
+          exit 1
+        fi
 
     - name: Check subkey expiry
       shell: bash

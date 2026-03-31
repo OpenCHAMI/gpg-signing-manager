@@ -1,6 +1,6 @@
 # GPG CI kit
 
-This bundle contains Bash scripts and GitHub Actions snippets for an offline-master / repo-subkey / ephemeral-build-key workflow.
+This bundle contains Bash scripts and GitHub Actions snippets for an offline-master / repo-subkey workflow, with optional ephemeral build keys for cases that need them.
 
 ## Included
 
@@ -11,7 +11,24 @@ This bundle contains Bash scripts and GitHub Actions snippets for an offline-mas
 - `scripts/check-subkey-expiry.sh`
 - `actions/check-subkey-expiration/action.yml`
 - `actions/gpg-ephemeral-key/action.yml`
+- `actions/setup-rpm-signing/action.yml`
 - `.github/workflows/subkey-expiry-check.yml`
+
+## Action: setup-rpm-signing
+
+`actions/setup-rpm-signing` is a composite GitHub Action for the normal RPM-signing path.
+It imports a base64-encoded repository signing subkey, discovers the signing identity,
+exports the matching public key, and writes an `rpmsign` configuration for the runner.
+
+Behavior:
+
+- Installs GnuPG and RPM tooling when the runner image does not already provide them.
+- Imports repository signing secret material from `GPG_SUBKEY_B64`-style base64 payloads.
+- Discovers the signing-capable secret key ID and fingerprint.
+- Exports the corresponding ASCII-armored public key for release artifacts.
+- Writes a deterministic `~/.rpmmacros` file for `rpmsign`.
+
+Use this action when the goal is to sign RPMs directly with the repository signing key.
 
 ## Action: gpg-ephemeral-key
 
@@ -26,6 +43,9 @@ Behavior:
 - Generates a no-passphrase ephemeral key suitable for CI artifact signing.
 - Attempts to certify the ephemeral key only when the imported secret material includes a cert-capable secret primary key.
 - Continues successfully when only a signing subkey is available, because subkey-only exports cannot certify new keys.
+
+Use this action only when a workflow genuinely needs a short-lived derived key.
+For normal RPM signing, prefer `actions/setup-rpm-signing`.
 
 ## Action: check-subkey-expiration
 
@@ -136,4 +156,8 @@ gh secret set GPG_SUBKEY_B64 \
 ```
 
 If you rotated a repo subkey, rerun the same `gh secret set GPG_SUBKEY_B64` command against the new `.b64` file produced under the rotation output directory.
+
+The resulting `GPG_SUBKEY_B64` secret contains signing-capable secret subkey material.
+It is suitable for signing RPMs directly in CI. It is not sufficient to certify a
+new key unless separate cert-capable secret key material is also available.
 

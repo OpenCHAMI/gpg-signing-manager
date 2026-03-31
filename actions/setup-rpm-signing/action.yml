@@ -1,0 +1,110 @@
+name: Setup RPM signing
+description: Import a repository signing subkey, export its public key, and configure rpmsign
+
+inputs:
+  subkey-armored-b64:
+    description: Base64-encoded armored secret subkey blob
+    required: true
+  public-key-output:
+    description: Path for the exported ASCII-armored public key
+    required: false
+    default: public_gpg_key.asc
+
+outputs:
+  repo-signing-keyid:
+    description: Key ID of the imported repo signing key
+    value: ${{ steps.discover.outputs.keyid }}
+  repo-signing-fingerprint:
+    description: Fingerprint of the imported repo signing key
+    value: ${{ steps.discover.outputs.fingerprint }}
+  public-key-path:
+    description: Path to the exported ASCII-armored public key
+    value: ${{ steps.export.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install GnuPG and RPM tools
+      shell: bash
+      run: |
+        if command -v gpg >/dev/null 2>&1 && command -v rpmsign >/dev/null 2>&1; then
+          exit 0
+        fi
+
+        if command -v sudo >/dev/null 2>&1; then
+          SUDO=sudo
+        else
+          SUDO=
+        fi
+
+        if command -v apt-get >/dev/null 2>&1; then
+          $SUDO apt-get update
+          $SUDO apt-get install -y gnupg2 rpm
+        elif command -v dnf >/dev/null 2>&1; then
+          $SUDO dnf install -y gnupg2 rpm-sign
+        else
+          echo 'Unsupported package manager: need apt-get or dnf' >&2
+          exit 1
+        fi
+
+    - name: Import repo signing key
+      shell: bash
+      env:
+        SUBKEY_ARMORED_B64: ${{ inputs.subkey-armored-b64 }}
+      run: |
+        set -euo pipefail
+        printf '%s' "$SUBKEY_ARMORED_B64" | base64 -d > repo-signing-subkey.asc
+        gpg --batch --import repo-signing-subkey.asc
+
+    - name: Discover repo signing key
+      id: discover
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        keyid=$(gpg --list-secret-keys --with-colons | awk -F: '($1=="sec" || $1=="ssb") && index($12, "s") { print $5; exit }')
+        if [ -z "$keyid" ]; then
+          echo 'Could not find imported signing-capable secret key' >&2
+          exit 1
+        fi
+
+        fingerprint=$(gpg --list-secret-keys --with-colons | awk -F: -v keyid="$keyid" '
+          ($1=="sec" || $1=="ssb") && $5==keyid { capture=1; next }
+          capture && $1=="fpr" { print $10; exit }
+        ')
+        if [ -z "$fingerprint" ]; then
+          echo 'Could not determine imported signing key fingerprint' >&2
+          exit 1
+        fi
+
+        echo "keyid=${keyid}" >> "$GITHUB_OUTPUT"
+        echo "fingerprint=${fingerprint}" >> "$GITHUB_OUTPUT"
+
+    - name: Export repo public key
+      id: export
+      shell: bash
+      env:
+        PUBLIC_KEY_OUTPUT: ${{ inputs.public-key-output }}
+      run: |
+        set -euo pipefail
+        gpg --armor --export '${{ steps.discover.outputs.fingerprint }}' > "$PUBLIC_KEY_OUTPUT"
+        echo "path=${PUBLIC_KEY_OUTPUT}" >> "$GITHUB_OUTPUT"
+
+    - name: Configure rpmsign
+      shell: bash
+      run: |
+        set -euo pipefail
+        cat > ~/.rpmmacros <<EOF
+        %_signature gpg
+        %_gpg_path %{getenv:HOME}/.gnupg
+        %_gpg_name ${{ steps.discover.outputs.fingerprint }}
+        %_gpgbin /usr/bin/gpg
+        %__gpg /usr/bin/gpg
+        %_gpg_digest_algo sha256
+        %__gpg_sign_cmd %{_gpgbin} \
+            --batch --yes --no-tty --pinentry-mode loopback --no-armor \
+            %{?_gpg_digest_algo:--digest-algo %{_gpg_digest_algo}} \
+            --local-user "%{_gpg_name}" \
+            --detach-sign --output %{__signature_filename} %{__plaintext_filename}
+        EOF
+        gpgconf --kill gpg-agent || true
