@@ -79,18 +79,6 @@ runs:
         fi
         echo "keyid=${keyid}" >> "$GITHUB_OUTPUT"
 
-    - name: Discover certifying key
-      id: cert_key
-      shell: bash
-      run: |
-        keyid=$(gpg --list-secret-keys --with-colons | awk -F: '$1=="sec" && index($12, "c") { print $5; exit }')
-        if [ -n "$keyid" ]; then
-          echo "keyid=${keyid}" >> "$GITHUB_OUTPUT"
-          echo 'found=true' >> "$GITHUB_OUTPUT"
-        else
-          echo 'found=false' >> "$GITHUB_OUTPUT"
-        fi
-
     - name: Generate ephemeral key
       shell: bash
       run: |
@@ -122,16 +110,27 @@ runs:
       id: sign_ephemeral
       shell: bash
       run: |
-        if [ '${{ steps.cert_key.outputs.found }}' != 'true' ]; then
-          echo 'No cert-capable secret key is available from the imported material; skipping key certification.'
-          echo 'performed=false' >> "$GITHUB_OUTPUT"
+        certify_log=$(mktemp)
+
+        if gpg --batch --yes \
+          --local-user '${{ steps.repo_key.outputs.keyid }}' \
+          --quick-sign-key '${{ steps.fpr.outputs.fingerprint }}' >"$certify_log" 2>&1; then
+          echo 'performed=true' >> "$GITHUB_OUTPUT"
+          rm -f "$certify_log"
           exit 0
         fi
 
-        gpg --batch --yes \
-          --local-user '${{ steps.cert_key.outputs.keyid }}' \
-          --quick-sign-key '${{ steps.fpr.outputs.fingerprint }}'
-        echo 'performed=true' >> "$GITHUB_OUTPUT"
+        if grep -Eq 'No secret key|Unusable secret key|No primary key' "$certify_log"; then
+          cat "$certify_log"
+          echo 'Imported secret material cannot certify keys; skipping ephemeral key certification.'
+          echo 'performed=false' >> "$GITHUB_OUTPUT"
+          rm -f "$certify_log"
+          exit 0
+        fi
+
+        cat "$certify_log" >&2
+        rm -f "$certify_log"
+        exit 1
 
     - name: Export ephemeral public key
       id: export
