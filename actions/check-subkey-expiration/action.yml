@@ -1,0 +1,82 @@
+name: Check GPG repo subkey expiry
+description: Decode GPG_SUBKEY_B64 and fail if any signing secret subkey expires within the threshold
+
+inputs:
+  subkey-armored-b64:
+    description: Base64-encoded armored secret subkey blob
+    required: true
+  warn-days:
+    description: Fail if expiry is within this many days
+    required: false
+    default: "30"
+
+runs:
+  using: composite
+  steps:
+    - name: Install GnuPG
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gnupg
+
+    - name: Check subkey expiry
+      shell: bash
+      env:
+        SUBKEY_ARMORED_B64: ${{ inputs.subkey-armored-b64 }}
+        WARN_DAYS: ${{ inputs.warn-days }}
+      run: |
+        set -euo pipefail
+
+        export GNUPGHOME="$(mktemp -d)"
+        trap 'rm -rf "$GNUPGHOME"' EXIT
+
+        printf '%s' "$SUBKEY_ARMORED_B64" | base64 -d > repo-subkey.asc
+        gpg --batch --import repo-subkey.asc >/dev/null 2>&1
+
+        now_epoch="$(date -u +%s)"
+        warn_seconds="$(( WARN_DAYS * 86400 ))"
+
+        found=0
+        failed=0
+
+        while IFS=: read -r type trust len algo keyid created expires rest; do
+          if [ "$type" != "ssb" ]; then
+            continue
+          fi
+
+          found=1
+
+          usage="$(printf '%s' "$rest" | awk -F: '{print $2}')"
+          if ! printf '%s' "$usage" | grep -q 's'; then
+            continue
+          fi
+
+          if [ -z "${expires:-}" ] || [ "$expires" = "0" ]; then
+            echo "Signing subkey $keyid does not expire."
+            continue
+          fi
+
+          remaining="$(( expires - now_epoch ))"
+          expiry_iso="$(date -u -d "@$expires" '+%Y-%m-%dT%H:%M:%SZ')"
+
+          if [ "$remaining" -le 0 ]; then
+            echo "::error::Signing subkey $keyid is already expired (expired $expiry_iso)"
+            failed=1
+          elif [ "$remaining" -le "$warn_seconds" ]; then
+            days_left="$(( (remaining + 86399) / 86400 ))"
+            echo "::error::Signing subkey $keyid expires soon: $expiry_iso (${days_left} days left)"
+            failed=1
+          else
+            days_left="$(( remaining / 86400 ))"
+            echo "Signing subkey $keyid OK: expires $expiry_iso (${days_left} days left)"
+          fi
+        done < <(gpg --batch --with-colons --list-secret-keys)
+
+        if [ "$found" -eq 0 ]; then
+          echo "::error::No secret subkeys found after importing GPG_SUBKEY_B64"
+          exit 1
+        fi
+
+        if [ "$failed" -ne 0 ]; then
+          exit 1
+        fi

@@ -9,8 +9,52 @@ This bundle contains Bash scripts and GitHub Actions snippets for an offline-mas
 - `scripts/rotate-repo-subkey.sh`
 - `scripts/list-subkeys.sh`
 - `scripts/check-subkey-expiry.sh`
+- `actions/check-subkey-expiration/action.yml`
 - `actions/gpg-ephemeral-key/action.yml`
 - `.github/workflows/subkey-expiry-check.yml`
+
+## Action: check-subkey-expiration
+
+`actions/check-subkey-expiration` is a composite GitHub Action that imports a
+base64-encoded secret subkey and fails the job when a signing subkey is already
+expired or will expire within a configurable warning window.
+
+Inputs:
+
+- `subkey-armored-b64`: required. Base64-encoded armored secret subkey blob, typically from the `GPG_SUBKEY_B64` repository secret.
+- `warn-days`: optional. Number of days before expiry that should fail the job. Default: `30`.
+
+Behavior:
+
+- Installs GnuPG in the runner.
+- Creates a temporary `GNUPGHOME` and imports the supplied secret subkey blob.
+- Scans imported secret subkeys and evaluates only signing-capable subkeys.
+- Fails the action if a signing subkey is expired or expires within the configured threshold.
+
+Example workflow usage:
+
+```yaml
+name: Check repo signing subkey expiration
+
+on:
+	schedule:
+		- cron: '17 6 * * 1'
+	workflow_dispatch:
+
+jobs:
+	check-subkey-expiration:
+		runs-on: ubuntu-latest
+		steps:
+			- name: Check repo subkey expiration
+				uses: ./actions/check-subkey-expiration
+				with:
+					subkey-armored-b64: ${{ secrets.GPG_SUBKEY_B64 }}
+					warn-days: '30'
+```
+
+This action is intended for repository-scoped subkeys stored in GitHub secrets.
+For checking public subkeys under a master key fingerprint, use
+`scripts/check-subkey-expiry.sh` with `MASTER_PUBLIC_ASC` and `MASTER_FPR`.
 
 ## Updating GitHub secrets with gh
 
@@ -53,12 +97,12 @@ MASTER_FPR="$(scripts/create-master-key.sh \
 
 gh secret set MASTER_PUBLIC_ASC \
 	--org "$ORG" \
-	--repos "$REPOS" \
+	--visibility all \
 	< "$OUTDIR/master-public.asc"
 
 gh secret set MASTER_FPR \
 	--org "$ORG" \
-	--repos "$REPOS" \
+	--visibility all \
 	--body "$MASTER_FPR"
 ```
 
