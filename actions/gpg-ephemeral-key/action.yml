@@ -1,5 +1,5 @@
-name: 'Generate and Sign Ephemeral GPG Key'
-description: 'Creates an ephemeral GPG key per build and signs it with a repo-scoped subkey'
+name: 'Generate Ephemeral GPG Key'
+description: 'Creates an ephemeral GPG key per build and certifies it when imported secret material allows'
 
 inputs:
   subkey-armored:
@@ -32,6 +32,9 @@ outputs:
   repo-signing-keyid:
     description: 'Key ID of the imported repo signing key'
     value: ${{ steps.repo_key.outputs.keyid }}
+  certification-performed:
+    description: 'Whether the ephemeral key was certified by an imported cert-capable secret key'
+    value: ${{ steps.sign_ephemeral.outputs.performed }}
 
 runs:
   using: 'composite'
@@ -76,6 +79,18 @@ runs:
         fi
         echo "keyid=${keyid}" >> "$GITHUB_OUTPUT"
 
+    - name: Discover certifying key
+      id: cert_key
+      shell: bash
+      run: |
+        keyid=$(gpg --list-secret-keys --with-colons | awk -F: '$1=="sec" && index($12, "c") { print $5; exit }')
+        if [ -n "$keyid" ]; then
+          echo "keyid=${keyid}" >> "$GITHUB_OUTPUT"
+          echo 'found=true' >> "$GITHUB_OUTPUT"
+        else
+          echo 'found=false' >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Generate ephemeral key
       shell: bash
       run: |
@@ -103,12 +118,20 @@ runs:
         fi
         echo "fingerprint=${fpr}" >> "$GITHUB_OUTPUT"
 
-    - name: Sign ephemeral key with repo subkey
+    - name: Certify ephemeral key when possible
+      id: sign_ephemeral
       shell: bash
       run: |
+        if [ '${{ steps.cert_key.outputs.found }}' != 'true' ]; then
+          echo 'No cert-capable secret key is available from the imported material; skipping key certification.'
+          echo 'performed=false' >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
         gpg --batch --yes \
-          --local-user '${{ steps.repo_key.outputs.keyid }}' \
+          --local-user '${{ steps.cert_key.outputs.keyid }}' \
           --quick-sign-key '${{ steps.fpr.outputs.fingerprint }}'
+        echo 'performed=true' >> "$GITHUB_OUTPUT"
 
     - name: Export ephemeral public key
       id: export

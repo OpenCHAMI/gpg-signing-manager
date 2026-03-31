@@ -13,6 +13,20 @@ This bundle contains Bash scripts and GitHub Actions snippets for an offline-mas
 - `actions/gpg-ephemeral-key/action.yml`
 - `.github/workflows/subkey-expiry-check.yml`
 
+## Action: gpg-ephemeral-key
+
+`actions/gpg-ephemeral-key` is a composite GitHub Action that imports a
+base64-encoded repository secret subkey, generates a short-lived build key, and
+exports the ephemeral public key for release artifacts.
+
+Behavior:
+
+- Installs GnuPG and RPM tooling when the runner image does not already provide them.
+- Imports the repository signing secret from `GPG_SUBKEY_B64`-style base64 payloads.
+- Generates a no-passphrase ephemeral key suitable for CI artifact signing.
+- Attempts to certify the ephemeral key only when the imported secret material includes a cert-capable secret primary key.
+- Continues successfully when only a signing subkey is available, because subkey-only exports cannot certify new keys.
+
 ## Action: check-subkey-expiration
 
 `actions/check-subkey-expiration` is a composite GitHub Action that imports a
