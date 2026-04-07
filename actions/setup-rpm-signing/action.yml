@@ -1,14 +1,14 @@
 name: Setup RPM signing
-description: Import a repository signing subkey, export its public key, and configure rpmsign
+description: Import a repository signing key, export its public key, and configure rpmsign
 
 inputs:
-  subkey-armored-b64:
-    description: Base64-encoded armored secret subkey blob
+  repo-key-armored-b64:
+    description: 'Base64-encoded armored repo signing gpg key'
     required: true
   public-key-output:
-    description: Path for the exported ASCII-armored public key
+    description: 'Path for the exported ASCII-armored public key'
     required: false
-    default: public_gpg_key.asc
+    default: 'public_gpg_key.asc'
 
 outputs:
   repo-signing-keyid:
@@ -50,11 +50,12 @@ runs:
     - name: Import repo signing key
       shell: bash
       env:
-        SUBKEY_ARMORED_B64: ${{ inputs.subkey-armored-b64 }}
+        REPO_KEY_ARMORED_B64: ${{ inputs.repo-key-armored-b64 }}
       run: |
         set -euo pipefail
-        printf '%s' "$SUBKEY_ARMORED_B64" | base64 -d > repo-signing-subkey.asc
-        gpg --batch --import repo-signing-subkey.asc
+        test -n "$REPO_KEY_ARMORED_B64"
+        printf '%s' "$REPO_KEY_ARMORED_B64" | base64 -d > repo-signing-key.asc
+        gpg --batch --import repo-signing-key.asc
 
     - name: Discover repo signing key
       id: discover

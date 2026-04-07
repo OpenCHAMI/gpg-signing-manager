@@ -2,8 +2,8 @@ name: 'Generate Ephemeral GPG Key'
 description: 'Creates an ephemeral GPG key per build and certifies it when imported secret material allows'
 
 inputs:
-  subkey-armored:
-    description: 'Base64-encoded GPG subkey'
+  repo-key-armored-b64:
+    description: 'Base64-encoded repo signing GPG key'
     required: true
   name:
     description: 'Name-Real value for the ephemeral key'
@@ -62,11 +62,14 @@ runs:
           exit 1
         fi
 
-    - name: Import repo subkey
+    - name: Import repo signing key
       shell: bash
+      env:
+        REPO_KEY_ARMORED_B64: ${{ inputs.repo-key-armored-b64 }}
       run: |
-        echo '${{ inputs.subkey-armored }}' | base64 -d > repo-subkey.asc
-        gpg --batch --import repo-subkey.asc
+        test -n "$REPO_KEY_ARMORED_B64"
+        printf '%s' "$REPO_KEY_ARMORED_B64" | base64 -d > repo-signing-key.asc
+        gpg --batch --import repo-signing-key.asc
 
     - name: Discover repo signing key
       id: repo_key
