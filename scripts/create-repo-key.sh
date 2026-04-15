@@ -64,8 +64,7 @@ prepare_gnupg_home() {
   gpgconf --homedir "$home" --create-socketdir >/dev/null 2>&1 || true
 
   # Force keybox/trustdb initialization and repeatedly verify agent readiness.
-  local attempt
-  for attempt in $(seq 1 30); do
+  for _ in $(seq 1 30); do
     # gpg-connect-agent auto-starts gpg-agent for this GNUPGHOME when possible.
     if GNUPGHOME="$home" gpg-connect-agent /bye >/dev/null 2>&1; then
       return 0
@@ -101,7 +100,7 @@ TEMP_GNUPGHOME_LINKS=()
 cleanup_temp_gnupghome_links() {
   local link
   for link in "${TEMP_GNUPGHOME_LINKS[@]:-}"; do
-    [[ -L "$link" ]] && rm -f "$link" || true
+    [[ -L "$link" ]] && rm -f "$link"
   done
 }
 
