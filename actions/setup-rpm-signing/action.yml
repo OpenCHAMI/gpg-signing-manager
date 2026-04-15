@@ -1,10 +1,20 @@
 name: Setup RPM signing
-description: Import a repository signing key, export its public key, and configure rpmsign
+description: >
+  Import a repository signing key, export its public key, and configure
+  rpmsign.  Optionally, override the signing identity with an ephemeral key
+  fingerprint so that RPMs are signed by the ephemeral key while the full
+  chain (master -> repo -> ephemeral) remains verifiable.
 
 inputs:
   repo-key-armored-b64:
-    description: 'Base64-encoded armored repo signing gpg key'
+    description: 'Base64-encoded armored repo signing GPG key (GPG_REPO_KEY_B64)'
     required: true
+  ephemeral-fingerprint:
+    description: >
+      Fingerprint of an already-imported ephemeral key to use as the RPM
+      signer instead of the repo key.  Leave empty to sign with the repo key.
+    required: false
+    default: ''
   public-key-output:
     description: 'Path for the exported ASCII-armored public key'
     required: false
@@ -57,12 +67,22 @@ runs:
         printf '%s' "$REPO_KEY_ARMORED_B64" | base64 -d > repo-signing-key.asc
         gpg --batch --import repo-signing-key.asc
 
-    - name: Discover repo signing key
+    - name: Discover signing identity
       id: discover
       shell: bash
       run: |
         set -euo pipefail
 
+        # If an ephemeral fingerprint was provided, use it directly.
+        if [ -n '${{ inputs.ephemeral-fingerprint }}' ]; then
+          fpr='${{ inputs.ephemeral-fingerprint }}'
+          keyid="${fpr: -16}"
+          echo "fingerprint=${fpr}" >> "$GITHUB_OUTPUT"
+          echo "keyid=${keyid}"     >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Otherwise fall back to the repo signing key.
         keyid=$(gpg --list-secret-keys --with-colons | awk -F: '($1=="sec" || $1=="ssb") && index($12, "s") { print $5; exit }')
         if [ -z "$keyid" ]; then
           echo 'Could not find imported signing-capable secret key' >&2
@@ -78,7 +98,7 @@ runs:
           exit 1
         fi
 
-        echo "keyid=${keyid}" >> "$GITHUB_OUTPUT"
+        echo "keyid=${keyid}"             >> "$GITHUB_OUTPUT"
         echo "fingerprint=${fingerprint}" >> "$GITHUB_OUTPUT"
 
     - name: Export repo public key

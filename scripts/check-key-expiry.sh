@@ -56,7 +56,7 @@ threshold_epoch="$(( $(date +%s) + THRESHOLD_DAYS * 86400 ))"
 found=0
 failed=0
 
-while IFS=: read -r rec_type _ _ keyid _ created expires _ _ _ _ capabilities _; do
+while IFS=: read -r rec_type _ _ keyid _ _ expires _ _ _ _ capabilities _; do
   if [[ "$rec_type" != "sec" && "$rec_type" != "ssb" ]]; then
     continue
   fi

@@ -1,0 +1,19 @@
+# act configuration — https://github.com/nektos/act
+#
+# Colima / Apple Silicon: use native arm64 containers for lower memory use.
+# Override with --container-architecture linux/amd64 only if a workflow needs it.
+--container-architecture linux/arm64
+
+# Use the smaller act image. Our workflows install gpg/rpm/shellcheck as needed,
+# so we do not need the heavyweight full runner image.
+-P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-latest
+
+# Colima: disable docker.sock mount into job containers. This repo's workflows
+# do not need Docker-in-Docker, and disabling the mount avoids host path errors.
+--container-daemon-socket -
+
+# Supply secrets from a local file (never committed — see .secrets.example).
+--secret-file .secrets
+
+# Don't print every step's raw shell commands.
+--verbose=false

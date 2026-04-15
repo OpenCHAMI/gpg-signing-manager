@@ -1,186 +1,126 @@
-# GPG CI kit
+# GPG Signing Manager
 
-This bundle contains Bash scripts and GitHub Actions snippets for an
-offline-master / repo-key workflow.
+Tools for a three-tier GPG signing chain: an **offline master key** certifies
+per-repo signing keys, which certify short-lived **ephemeral release keys**.
+RPMs are signed by the ephemeral key so that every signature is traceable back
+to the master key.
 
-Each repository gets its **own standalone OpenPGP key hierarchy**. The offline
-org master key certifies each repo key, but repo keys are **not subkeys of the
-master**. That means CI can sign with repo-scoped secret material without
-needing the master-key passphrase, while consumers can still trust repo keys by
-importing the master public key and the certified repo public key.
+## Trust model
+
+```
+offline master key  (gnupg-master/)
+    └─[certifies]─> repo signing key  (gnupg-repos/<repo>/)
+                        └─[certifies]─> ephemeral release key  (generated in CI)
+                                            └─[signs]─> RPM files
+```
+
+Users can verify a signed RPM via **any** of the three public keys:
+
+| Public key | Where to get it |
+|---|---|
+| Master | Published by the org (e.g. `MASTER_PUBLIC_ASC` org secret or release artifact) |
+| Repo | Released as `repo-public.asc` alongside RPMs |
+| Ephemeral | Released as `ephemeral-public.asc` alongside RPMs |
 
 ## Included
 
-- `scripts/create-master-key.sh`
-- `scripts/create-repo-key.sh`
-- `scripts/rotate-repo-key.sh`
-- `scripts/list-repo-keys.sh`
-- `scripts/check-key-expiry.sh`
-- `actions/check-key-expiration/action.yml`
-- `actions/gpg-ephemeral-key/action.yml`
-- `actions/setup-rpm-signing/action.yml`
-- `.github/workflows/key-expiry-check.yml`
+| Path | Purpose |
+|---|---|
+| `scripts/create-master-key.sh` | One-time: create the offline master key |
+| `scripts/create-repo-key.sh` | Per-repo: create a signing key certified by master |
+| `scripts/rotate-repo-key.sh` | Revoke an old repo key and create a replacement |
+| `scripts/verify-chain.sh` | Verify the full master→repo→ephemeral chain locally |
+| `scripts/validate-rotation.sh` | Confirm a rotation is safe before updating secrets |
+| `scripts/list-repo-keys.sh` | Audit all repo keys and their master certifications |
+| `scripts/check-key-expiry.sh` | Fail if a signing key is expired or expiring soon |
+| `actions/check-key-expiration/` | CI: gate a job on key expiry |
+| `actions/gpg-ephemeral-key/` | CI: generate and certify an ephemeral release key |
+| `actions/setup-rpm-signing/` | CI: import key, configure rpmsign |
+| `.github/workflows/example-release.yml` | Copy-paste release workflow template |
+| `.github/workflows/key-expiry-check.yml` | Scheduled key expiry check |
+| `test/integration-test.sh` | End-to-end test of the signing chain |
 
-## Workflow Summary
+---
 
-1. Create the offline master key with `scripts/create-master-key.sh`.
-2. Create a **standalone repo key** with `scripts/create-repo-key.sh`.
-3. During repo-key creation, the master key imports the repo public key and certifies it.
-4. Export the certified repo public key for distribution.
-5. Export the repo signing secret material for GitHub Secrets.
-6. In CI, import the repo secret material and sign packages normally.
+## Prerequisites
 
-This preserves a trust chain anchored in the master key without requiring the
-master key for everyday signing operations.
+Install the required tools before running any scripts.
 
-## The Products of `create-repo-key.sh`
+```bash
+# macOS (Homebrew)
+brew install gnupg gh
 
-For each repository, the script generates a standalone repo key with:
+# Debian / Ubuntu
+sudo apt install gnupg2 gh
 
-- a certify-only primary key
-- a signing subkey used by CI
-- a master-key certification on the repo key UID
-
-Artifacts include:
-
-- certified repo public key
-- CI-ready secret subkeys export
-- base64 payload for GitHub Secrets
-- full secret backup for offline recovery / revocation
-- revocation certificate
-- metadata and keydump files
-
-## Action: `setup-rpm-signing`
-
-`actions/setup-rpm-signing` is a composite GitHub Action for the normal
-RPM-signing path. It imports a base64-encoded armored secret key, discovers the
-signing identity, exports the matching public key, and writes an `rpmsign`
-configuration for the runner.
-
-Behavior:
-
-- Installs GnuPG and RPM tooling when the runner image does not already provide
-  them.
-- Imports secret key material from `GPG_REPO_KEY_B64` base64
-  payloads.
-- Discovers the signing-capable secret key ID and fingerprint.
-- Exports the corresponding ASCII-armored public key for release artifacts.
-- Writes a deterministic `~/.rpmmacros` file for `rpmsign`.
-
-Use this action when the goal is to sign RPMs directly with the repository signing key.
-
-## Action: `gpg-ephemeral-key`
-
-`actions/gpg-ephemeral-key` is a composite GitHub Action that imports a
-base64-encoded armored secret key, generates a short-lived build key, and
-exports the ephemeral public key for release artifacts.
-
-Behavior:
-
-- Installs GnuPG and RPM tooling when the runner image does not already provide
-  them.
-- Imports the repository signing secret from `GPG_REPO_KEY_B64` payloads.
-- Generates a no-passphrase ephemeral key suitable for CI artifact signing.
-- Attempts to certify the ephemeral key only when the imported secret material
-  includes a cert-capable secret primary key.
-- Continues successfully when only signing subkeys are available, because CI
-  exports are typically least-privilege secret-subkeys bundles.
-
-Use this action only when a workflow genuinely needs a short-lived derived key.
-For normal RPM signing, prefer `actions/setup-rpm-signing`.
-
-## Action: `check-key-expiration`
-
-`actions/check-key-expiration` is a composite GitHub Action that imports a
-base64-encoded armored secret key and fails the job when a signing key is
-already expired or will expire within a configurable warning window. It works
-for either the master key or a repository key, as long as the imported secret
-material contains at least one signing-capable secret key.
-
-Inputs:
-
-- `key-armored-b64`: required. Base64-encoded armored exported signing secret
-  export.
-- `warn-days`: optional. Number of days before expiry that should fail the job.
-  Default: `30`.
-
-Behavior:
-
-- Installs GnuPG in the runner.
-- Creates a temporary `GNUPGHOME` and imports the supplied secret material.
-- Scans imported secret keys and evaluates signing-capable secret keys.
-- Fails the action if a signing key is expired or expires within the configured
-  threshold.
-
-This action is intended for secret keys stored in GitHub secrets. In a repo
-workflow, that will usually be `${{ secrets.GPG_REPO_KEY_B64 }}`; for a master
-key workflow, use the corresponding master-key secret instead.
-
-Example workflow:
-
-```yaml
-name: Key expiry check
-
-on:
-  schedule:
-    - cron: '17 6 * * 1'
-  workflow_dispatch:
-
-jobs:
-  check-signing-key:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repo
-        uses: actions/checkout@v4
-
-      - name: Check key expiration
-        uses: ./actions/check-key-expiration
-        with:
-          key-armored-b64: ${{ secrets.GPG_REPO_KEY_B64 }}
-          warn-days: '30'
+# RHEL / Fedora
+sudo dnf install gnupg2 gh
 ```
 
-## Updating GitHub Secrets with `gh`
-
-Authenticate the GitHub CLI first:
+Authenticate the GitHub CLI once:
 
 ```bash
 gh auth login
-gh auth status
+gh auth status   # confirm you are logged in
 ```
 
-Typical local flow:
+---
+
+## One-time: Create the master key
+
+Run this on an **offline, air-gapped machine**.  The master key never leaves
+that machine; only the public key and the outputs of `create-repo-key.sh` are
+copied out.
 
 ```bash
-MASTER_FPR="$(scripts/create-master-key.sh \
-  --name "OpenCHAMI Software Signing Key" \
-  --email "admin@openchami.org")"
+# Clone the repo onto the offline machine, then:
+cd /path/to/gpg-signing-manager
 
-scripts/create-repo-key.sh \
-  --master-fpr "$MASTER_FPR" \
-  --repo "your-org/your-repo"
+MASTER_FPR=$(scripts/create-master-key.sh \
+  --name    "OpenCHAMI Software Signing Key" \
+  --email   "admin@openchami.org" \
+  --expire  "5y")
+
+echo "Master fingerprint: $MASTER_FPR"
 ```
 
-By default, `create-master-key.sh` and `rotate-master-key.sh` use
-`./gnupg-master`, and `create-repo-key.sh` uses `./gnupg-repos/<repo>`, so the
-offline master key and repo keys live in separate keyrings.
+The script prints only the fingerprint to stdout; all other output goes to
+stderr so it is safe to capture with `$()`.
 
-After creating a master key, publish the public bundle and fingerprint as
-organization secrets.  Use `--repos` to limit access to specific repositories,
-or replace it with `--visibility private` if every private repository in the
-organization should be able to read them.
+Already have an existing master key in this repo and just need its fingerprint?
+
+```bash
+# Default keyring location used by these scripts:
+gpg --homedir ./gnupg-master --list-secret-keys --with-colons \
+  | awk -F: '$1=="fpr" { print $10; exit }'
+
+# Save it for later commands:
+MASTER_FPR=$(gpg --homedir ./gnupg-master --list-secret-keys --with-colons \
+  | awk -F: '$1=="fpr" { print $10; exit }')
+echo "$MASTER_FPR"
+```
+
+If your master keyring is in a different directory, replace `./gnupg-master`
+with that path.
+
+Outputs in `./gnupg-out/`:
+
+| File | Description |
+|---|---|
+| `master-public.asc` | Public key — safe to publish |
+| `master-secret-backup.asc` | **Keep offline and encrypted** |
+| `<FPR>-revocation.asc` | Store securely offline |
+
+Publish the master public key as an org-level GitHub secret and note the
+fingerprint:
 
 ```bash
 ORG="your-org"
-OUTDIR="$(pwd)/gnupg-out"
-MASTER_FPR="$(scripts/create-master-key.sh \
-  --name "OpenCHAMI Software Signing Key" \
-  --email "admin@openchami.org")"
 
 gh secret set MASTER_PUBLIC_ASC \
   --org "$ORG" \
   --visibility all \
-  < "$OUTDIR/master-public.asc"
+  < gnupg-out/master-public.asc
 
 gh secret set MASTER_FPR \
   --org "$ORG" \
@@ -188,44 +128,326 @@ gh secret set MASTER_FPR \
   --body "$MASTER_FPR"
 ```
 
-After creating a repo key, store its base64 payload as a repository secret in
-the target repo:
+---
+
+## Per-repo: Create and store a repo signing key
+
+Run this on the **offline machine** where the master key lives.
 
 ```bash
-REPO="your-org/repo-one"
-REPO_DIR="$(pwd)/gnupg-out/your-org-repo-one"
+REPO="your-org/your-repo"
 
 scripts/create-repo-key.sh \
   --master-fpr "$MASTER_FPR" \
-  --repo "$REPO"
+  --repo       "$REPO"
+```
+
+Default paths: master keyring → `./gnupg-master`, repo keyring →
+`./gnupg-repos/<repo>`, outputs → `./gnupg-out/<repo>`.
+
+The script creates **two separate secret artifacts** with different purposes:
+
+| Artifact | GitHub Secret | Purpose |
+|---|---|---|
+| `<repo>-secret-subkeys.b64` | `GPG_REPO_KEY_B64` | Signs RPMs via `setup-rpm-signing` |
+| `<repo>-secret-cert.b64` | `GPG_REPO_CERT_KEY_B64` | Certifies ephemeral keys via `gpg-ephemeral-key` |
+
+Neither artifact contains master key material.
+
+Copy both files to an online machine (or use a USB drive), then set the secrets:
+
+```bash
+REPO="your-org/your-repo"
+SAFE_REPO="${REPO//\//-}"   # e.g. "your-org-your-repo"
+OUTDIR="$(pwd)/gnupg-out/${SAFE_REPO}"
+
+# Signs RPMs in CI.
+gh secret set GPG_REPO_KEY_B64 \
+  --repo "$REPO" \
+  < "${OUTDIR}/${SAFE_REPO}-secret-subkeys.b64"
+
+# Certifies ephemeral release keys in CI.
+gh secret set GPG_REPO_CERT_KEY_B64 \
+  --repo "$REPO" \
+  < "${OUTDIR}/${SAFE_REPO}-secret-cert.b64"
+```
+
+> **Security note**  `GPG_REPO_KEY_B64` contains only signing-capable subkey
+> material — it cannot certify any key.  `GPG_REPO_CERT_KEY_B64` contains only
+> the cert-capable primary key with no signing subkeys.  Keeping them separate
+> limits the blast radius of a secret exposure.
+
+Also publish the certified repo public key alongside your releases:
+
+```bash
+# The certified public key is at:
+echo "${OUTDIR}/${SAFE_REPO}-public.asc"
+```
+
+---
+
+## CI usage
+
+### `gpg-ephemeral-key` — generate a per-release signing key
+
+Generates a short-lived Ed25519 key, certifies it with `GPG_REPO_CERT_KEY_B64`,
+and exports the public key.  **The job fails if certification cannot be
+completed**, ensuring the trust chain is always enforced.
+
+```yaml
+- name: Generate ephemeral release key
+  id: ephemeral
+  uses: ./actions/gpg-ephemeral-key
+  with:
+    cert-key-armored-b64: ${{ secrets.GPG_REPO_CERT_KEY_B64 }}
+    name:    '${{ github.repository }} Release'
+    comment: 'ephemeral key for ${{ github.ref_name }}'
+    email:   'release@packages.openchami.org'
+    expire:  '24h'
+```
+
+Outputs:
+
+| Output | Description |
+|---|---|
+| `ephemeral-fingerprint` | Full fingerprint of the generated key |
+| `ephemeral-public-key` | Base64-encoded ASCII-armored public key |
+| `repo-cert-keyid` | Short key ID used for certification |
+
+### `setup-rpm-signing` — configure rpmsign
+
+Imports the repo signing key and writes `~/.rpmmacros`.  Pass
+`ephemeral-fingerprint` to sign RPMs with the ephemeral key instead of the
+repo key directly.
+
+```yaml
+- name: Setup RPM signing
+  id: rpm_signing
+  uses: ./actions/setup-rpm-signing
+  with:
+    repo-key-armored-b64:  ${{ secrets.GPG_REPO_KEY_B64 }}
+    ephemeral-fingerprint: ${{ steps.ephemeral.outputs.ephemeral-fingerprint }}
+    public-key-output:     repo-public.asc
+
+# Then sign your RPMs:
+- name: Sign RPMs
+  run: |
+    for rpm in dist/*.rpm; do
+      rpm --define "_gpg_name ${{ steps.ephemeral.outputs.ephemeral-fingerprint }}" \
+          --addsign "$rpm"
+    done
+```
+
+### `check-key-expiration` — gate a job on key health
+
+```yaml
+name: Key expiry check
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'   # every Monday morning
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check repo key expiration
+        uses: ./actions/check-key-expiration
+        with:
+          key-armored-b64: ${{ secrets.GPG_REPO_KEY_B64 }}
+          warn-days: '30'
+```
+
+---
+
+## Full release workflow
+
+See `.github/workflows/example-release.yml` for a complete, copy-paste-ready
+release workflow that wires all three actions together and runs `verify-chain.sh`
+as a gate before publishing.
+
+---
+
+## Verifying a release locally
+
+Download `repo-public.asc` and `ephemeral-public.asc` from the GitHub Release
+page, then run:
+
+```bash
+# Basic: import and verify RPM signatures
+gpg --import repo-public.asc ephemeral-public.asc
+rpm --checksig *.rpm
+
+# Full chain verification (also validates master→repo→ephemeral certifications)
+# Requires the master public key (available as MASTER_PUBLIC_ASC org secret
+# or from the offline machine's gnupg-out/master-public.asc).
+scripts/verify-chain.sh \
+  --master    master-public.asc \
+  --repo      repo-public.asc \
+  --ephemeral ephemeral-public.asc \
+  --rpm       *.rpm
+```
+
+`verify-chain.sh` prints `PASS` or `FAIL` for each check and exits non-zero
+if any check fails.
+
+---
+
+## Rotating a repo key
+
+Run this on the **offline machine** where the master key lives.
+
+```bash
+REPO="your-org/your-repo"
+OLD_REPO_FPR="<fingerprint of the key being replaced>"
+
+scripts/rotate-repo-key.sh \
+  --master-fpr   "$MASTER_FPR" \
+  --old-repo-fpr "$OLD_REPO_FPR" \
+  --repo         "$REPO"
+```
+
+Outputs appear in `./gnupg-out/<repo>-rotation/`.
+
+Before updating GitHub Secrets, validate that the rotation is safe:
+
+```bash
+SAFE_REPO="${REPO//\//-}"
+ROTATION_DIR="gnupg-out/${SAFE_REPO}-rotation"
+
+scripts/validate-rotation.sh \
+  --master-fpr "$MASTER_FPR" \
+  --old-key    "${ROTATION_DIR}/${SAFE_REPO}-old-public-revoked.asc" \
+  --new-key    "${ROTATION_DIR}/new-key/${SAFE_REPO}-public.asc"
+```
+
+When `validate-rotation.sh` exits 0, update both GitHub Secrets:
+
+```bash
+NEW_KEY_DIR="${ROTATION_DIR}/new-key"
 
 gh secret set GPG_REPO_KEY_B64 \
   --repo "$REPO" \
-  < "$REPO_DIR/your-org-repo-one-secret-subkeys.b64"
+  < "${NEW_KEY_DIR}/${SAFE_REPO}-secret-subkeys.b64"
+
+gh secret set GPG_REPO_CERT_KEY_B64 \
+  --repo "$REPO" \
+  < "${NEW_KEY_DIR}/${SAFE_REPO}-secret-cert.b64"
 ```
 
-The resulting `GPG_REPO_KEY_B64` secret contains signing-capable secret subkey
-material.  It is suitable for signing RPMs directly in CI. It is not sufficient
-to certify a new key unless separate cert-capable secret key material is also
-available.
+Also publish the new certified public key and distribute the revocation
+certificate for the old key.
 
-If you rotated a repo key, rerun the same `gh secret set GPG_SUBKEY_B64`
-command against the new `.b64` file produced under the rotation output
-directory.
+---
 
-Distribute the certified repo public key from:
+## Running the test suite
 
 ```bash
-$REPO_DIR/your-org-repo-one-public.asc
+bash test/integration-test.sh
 ```
 
-Users can then:
+Expected output:
 
-1. import the master public key,
-2. import the certified repo public key,
-3. verify that the repo key is certified by the master key, and
-4. trust packages signed by that repo key.
+```
+======================================================
+  GPG Signing Chain Integration Test
+======================================================
+  Working directory: /tmp/tmp.XXXXXXXXXX
 
-If you rotate a repo key, update the repository secret with the new `.b64` file
-and publish the new certified public key. Also distribute the old repo-key
-revocation when appropriate.
+--- Test 1: Create master key ---
+  Test 1 PASS: Master key created (FINGERPRINT)
+
+--- Test 2: Create repo key with dual secret exports ---
+  Test 2 PASS: Repo key created (FINGERPRINT), both artifacts exported, master cert present
+
+--- Test 3: Generate and certify ephemeral Ed25519 key ---
+  Test 3 PASS: Ephemeral key (FINGERPRINT) certified by repo key (FINGERPRINT)
+
+--- Test 4: verify-chain.sh validates full chain ---
+  Test 4 PASS: verify-chain.sh exited 0 — full chain is valid
+
+--- Test 5: verify-chain.sh rejects uncertified ephemeral key ---
+  Test 5 PASS: verify-chain.sh correctly rejected an uncertified ephemeral key (exited non-zero)
+
+--- Test 6: verify-chain.sh rejects repo key not signed by master ---
+  Test 6 PASS: verify-chain.sh correctly rejected a broken chain (exited non-zero)
+
+======================================================
+  Results: 6 passed, 0 failed, 0 skipped
+======================================================
+  All tests passed.
+```
+
+CI runs the same suite on every push via `.github/workflows/test-scripts.yml`.
+
+---
+
+## Running workflows locally with act
+
+[`act`](https://github.com/nektos/act) runs GitHub Actions workflows in local
+Docker containers (Colima works as the container runtime).
+
+### Install
+
+```bash
+brew install act
+```
+
+### One-time setup
+
+Copy `.secrets.example` to `.secrets` and fill in real key material.  `.secrets`
+is gitignored and must never be committed.
+
+```bash
+cp .secrets.example .secrets
+# edit .secrets — paste the base64 key values produced by create-repo-key.sh
+```
+
+The `.actrc` file in the repo root configures `act` to:
+- use `ghcr.io/catthehacker/ubuntu:act-latest`
+- read secrets from `.secrets`
+- target `linux/arm64` by default on Apple Silicon (lower memory than emulated amd64)
+
+This image is much smaller than `full-latest`.  It is sufficient here because
+the workflows install `gnupg2`, `rpm`, and `shellcheck` explicitly.
+
+If you need amd64 parity for a specific workflow, override per run:
+
+```bash
+act push -W .github/workflows/test-scripts.yml --container-architecture linux/amd64
+```
+
+### Run individual workflows
+
+```bash
+# Shellcheck + integration tests (no secrets required)
+act push -W .github/workflows/test-scripts.yml
+
+# Scheduled key expiry check (requires GPG_REPO_KEY_B64 in .secrets)
+act schedule -W .github/workflows/key-expiry-check.yml
+
+# Full release workflow (requires all three secrets in .secrets)
+# The example-release workflow triggers on tag pushes or workflow_dispatch.
+act workflow_dispatch -W .github/workflows/example-release.yml
+```
+
+### Dry-run (list jobs without running containers)
+
+```bash
+act push -W .github/workflows/test-scripts.yml --list
+```
+
+### Testing the composite actions directly
+
+The composite actions (`check-key-expiration`, `gpg-ephemeral-key`,
+`setup-rpm-signing`) are invoked from workflows rather than run standalone.
+Use the release workflow as the harness:
+
+```bash
+act workflow_dispatch -W .github/workflows/example-release.yml
+```
+
+

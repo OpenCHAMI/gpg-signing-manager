@@ -15,3 +15,6 @@ gnupg-master/
 # Key generation batch files can embed passphrases
 **/master-key.batch
 gnupg-out/
+
+# act secrets file — contains real key material, never commit
+.secrets
