@@ -51,7 +51,7 @@ jobs:
           name:    '${{ github.repository }} Release'
           comment: 'ephemeral key for ${{ github.ref_name }}'
           email:   'release@packages.openchami.org'
-          expire:  '24h'
+          expire:  '1d'
 
       # ------------------------------------------------------------------
       # 4. Set up RPM signing using the ephemeral key as the direct signer
