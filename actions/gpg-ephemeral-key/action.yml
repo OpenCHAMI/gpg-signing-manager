@@ -1,140 +1,143 @@
 name: 'Generate Ephemeral GPG Key'
-description: 'Creates an ephemeral GPG key per build and certifies it when imported secret material allows'
+description: >
+  Creates a short-lived Ed25519 signing key for a single release, certifies it
+  with the repo cert key, and exports the public key.  The job fails if
+  certification cannot be completed so the trust chain is always enforced.
 
 inputs:
-  subkey-armored:
-    description: 'Base64-encoded GPG subkey'
+  cert-key-armored-b64:
+    description: >
+      Base64-encoded ASCII-armored cert-capable repo primary key
+      (GPG_REPO_CERT_KEY_B64).  Used exclusively to certify the ephemeral key.
     required: true
   name:
-    description: 'Name-Real value for the ephemeral key'
+    description: 'Name-Real value for the ephemeral key UID'
     required: false
-    default: 'Ephemeral Key'
+    default: 'Ephemeral Release Key'
   comment:
-    description: 'Name-Comment value for the ephemeral key'
+    description: 'Name-Comment value for the ephemeral key UID'
     required: false
     default: ''
   email:
-    description: 'Name-Email value for the ephemeral key'
+    description: 'Name-Email value for the ephemeral key UID'
     required: false
     default: 'ci@build.local'
   expire:
-    description: 'Ephemeral key expiration'
+    description: 'Ephemeral key expiration (e.g. 1d, 12h)'
     required: false
     default: '1d'
 
 outputs:
   ephemeral-fingerprint:
-    description: 'Fingerprint of the generated ephemeral key'
+    description: 'Full fingerprint of the generated ephemeral key'
     value: ${{ steps.fpr.outputs.fingerprint }}
   ephemeral-public-key:
     description: 'Base64-encoded ASCII-armored ephemeral public key'
     value: ${{ steps.export.outputs.pubkey }}
-  repo-signing-keyid:
-    description: 'Key ID of the imported repo signing key'
-    value: ${{ steps.repo_key.outputs.keyid }}
-  certification-performed:
-    description: 'Whether the ephemeral key was certified by an imported cert-capable secret key'
-    value: ${{ steps.sign_ephemeral.outputs.performed }}
+  repo-cert-keyid:
+    description: 'Short key ID of the repo cert key used for certification'
+    value: ${{ steps.import_cert.outputs.keyid }}
 
 runs:
   using: 'composite'
   steps:
-    - name: Install GnuPG and RPM tools
+    - name: Install GnuPG
       shell: bash
       run: |
-        if command -v gpg >/dev/null 2>&1 && command -v rpm >/dev/null 2>&1; then
+        if command -v gpg >/dev/null 2>&1; then
           exit 0
         fi
-
-        if command -v sudo >/dev/null 2>&1; then
-          SUDO=sudo
-        else
-          SUDO=
-        fi
-
+        if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
         if command -v apt-get >/dev/null 2>&1; then
-          $SUDO apt-get update
-          $SUDO apt-get install -y gnupg2 rpm
+          $SUDO apt-get update -qq
+          $SUDO apt-get install -y gnupg2
         elif command -v dnf >/dev/null 2>&1; then
-          $SUDO dnf install -y gnupg2 rpm
+          $SUDO dnf install -y gnupg2
         else
           echo 'Unsupported package manager: need apt-get or dnf' >&2
           exit 1
         fi
 
-    - name: Import repo subkey
+    - name: Import repo cert key
+      id: import_cert
       shell: bash
+      env:
+        CERT_KEY_ARMORED_B64: ${{ inputs.cert-key-armored-b64 }}
       run: |
-        echo '${{ inputs.subkey-armored }}' | base64 -d > repo-subkey.asc
-        gpg --batch --import repo-subkey.asc
+        set -euo pipefail
+        test -n "$CERT_KEY_ARMORED_B64"
+        printf '%s' "$CERT_KEY_ARMORED_B64" | base64 -d > repo-cert-key.asc
+        gpg --batch --import repo-cert-key.asc
 
-    - name: Discover repo signing key
-      id: repo_key
-      shell: bash
-      run: |
-        keyid=$(gpg --list-secret-keys --with-colons | awk -F: '($1=="sec" || $1=="ssb") && index($12, "s") { print $5; exit }')
+        # The cert key export contains only the primary key (no subkeys).
+        # It must have a cert-capable [C] primary key.
+        keyid=$(gpg --list-secret-keys --with-colons \
+          | awk -F: '$1=="sec" && index($12,"c") { print $5; exit }')
         if [ -z "$keyid" ]; then
-          echo 'Could not find imported signing-capable secret key' >&2
+          echo 'Imported key does not contain a cert-capable secret primary key.' >&2
+          echo 'Ensure GPG_REPO_CERT_KEY_B64 was created by create-repo-key.sh.' >&2
           exit 1
         fi
         echo "keyid=${keyid}" >> "$GITHUB_OUTPUT"
 
-    - name: Generate ephemeral key
+    - name: Record existing secret key fingerprints
       shell: bash
       run: |
-        gpg --list-secret-keys --with-colons | awk -F: '$1=="fpr" {print $10}' > existing-secret-fingerprints.txt
-        cat > keygen.conf <<KEYCONF
+        gpg --list-secret-keys --with-colons \
+          | awk -F: '$1=="fpr" {print $10}' > existing-secret-fingerprints.txt
+
+    - name: Generate ephemeral Ed25519 signing key
+      shell: bash
+      run: |
+        set -euo pipefail
+        cat > ephemeral-keygen.conf <<KEYCONF
         %no-protection
-        Key-Type: RSA
-        Key-Length: 3072
+        Key-Type: eddsa
+        Key-Curve: ed25519
+        Key-Usage: sign
         Name-Real: ${{ inputs.name }}
-        Name-Comment: ${{ inputs.comment }}
+        ${{ inputs.comment != '' && format('Name-Comment: {0}', inputs.comment) || '' }}
         Name-Email: ${{ inputs.email }}
         Expire-Date: ${{ inputs.expire }}
         %commit
         KEYCONF
-        gpg --batch --generate-key keygen.conf
+        gpg --batch --generate-key ephemeral-keygen.conf
 
-    - name: Discover ephemeral fingerprint
+    - name: Discover ephemeral key fingerprint
       id: fpr
       shell: bash
       run: |
-        fpr=$(gpg --list-secret-keys --with-colons | awk -F: '$1=="fpr" {print $10}' | grep -Fxv -f existing-secret-fingerprints.txt | head -n 1)
+        set -euo pipefail
+        fpr=$(gpg --list-secret-keys --with-colons \
+          | awk -F: '$1=="fpr" {print $10}' \
+          | grep -Fxv -f existing-secret-fingerprints.txt \
+          | head -n 1)
         if [ -z "$fpr" ]; then
-          echo 'Could not determine ephemeral key fingerprint' >&2
+          echo 'Could not determine ephemeral key fingerprint.' >&2
           exit 1
         fi
         echo "fingerprint=${fpr}" >> "$GITHUB_OUTPUT"
 
-    - name: Certify ephemeral key when possible
-      id: sign_ephemeral
+    - name: Certify ephemeral key with repo cert key
       shell: bash
       run: |
-        certify_log=$(mktemp)
-
-        if gpg --batch --yes \
-          --local-user '${{ steps.repo_key.outputs.keyid }}' \
-          --quick-sign-key '${{ steps.fpr.outputs.fingerprint }}' >"$certify_log" 2>&1; then
-          echo 'performed=true' >> "$GITHUB_OUTPUT"
-          rm -f "$certify_log"
-          exit 0
+        set -euo pipefail
+        # Certification creates an exportable OpenPGP signature so that
+        # consumers can verify: master -> repo -> ephemeral -> RPM.
+        if ! gpg --batch --yes \
+            --pinentry-mode loopback \
+            --local-user '${{ steps.import_cert.outputs.keyid }}' \
+            --quick-sign-key '${{ steps.fpr.outputs.fingerprint }}' 2>&1; then
+          echo '' >&2
+          echo 'ERROR: Ephemeral key certification failed.' >&2
+          echo 'Ensure GPG_REPO_CERT_KEY_B64 contains a cert-capable primary key.' >&2
+          exit 1
         fi
-
-        if grep -Eq 'No secret key|Unusable secret key|No primary key' "$certify_log"; then
-          cat "$certify_log"
-          echo 'Imported secret material cannot certify keys; skipping ephemeral key certification.'
-          echo 'performed=false' >> "$GITHUB_OUTPUT"
-          rm -f "$certify_log"
-          exit 0
-        fi
-
-        cat "$certify_log" >&2
-        rm -f "$certify_log"
-        exit 1
 
     - name: Export ephemeral public key
       id: export
       shell: bash
       run: |
+        set -euo pipefail
         gpg --armor --export '${{ steps.fpr.outputs.fingerprint }}' > ephemeral-public.asc
         echo "pubkey=$(base64 < ephemeral-public.asc | tr -d '\n')" >> "$GITHUB_OUTPUT"

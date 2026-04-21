@@ -1,0 +1,19 @@
+name: Repo key expiry check
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  check-repo-signing-key:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Check repo key expiration
+        uses: ./actions/check-key-expiration
+        with:
+          key-armored-b64: ${{ secrets.GPG_REPO_KEY_B64 }}
+          warn-days: '30'

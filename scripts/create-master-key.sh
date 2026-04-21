@@ -16,7 +16,7 @@ Options:
   --comment COMMENT           Optional UID comment
   --expire EXPIRY             Key expiration, default: 5y
   --gnupghome DIR             GnuPG home directory, default: ./gnupg-master
-  --outdir DIR                Output directory, default: ./out
+  --outdir DIR                Output directory, default: ./gnupg-out
   --passphrase-file FILE      Read key passphrase from FILE
   --help                      Show this help text
 
@@ -33,7 +33,7 @@ EMAIL=""
 COMMENT=""
 EXPIRE="5y"
 GNUPGHOME_DIR="$(pwd)/gnupg-master"
-OUTDIR="$(pwd)/out"
+OUTDIR="$(pwd)/gnupg-out"
 PASSPHRASE_FILE=""
 
 # Parse CLI flags up front so the rest of the script can assume normalized input.

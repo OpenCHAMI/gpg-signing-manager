@@ -1,0 +1,174 @@
+# example-release.yml — copy-paste starting point for a release workflow that
+# uses the full master → repo → ephemeral → RPM signing chain.
+#
+# Required repository secrets:
+#   GPG_REPO_KEY_B64       Signing subkeys (from create-repo-key.sh)
+#   GPG_REPO_CERT_KEY_B64  Cert-capable primary key (from create-repo-key.sh)
+#
+# Optional repository / org secrets (for user verification):
+#   MASTER_PUBLIC_ASC      Master public key (ASCII-armored, org-level secret)
+#
+# Adapt the "Build RPMs" step to your actual build system.
+
+name: Release (GPG signed RPMs)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to create/update GitHub Releases
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Check out source
+      # ------------------------------------------------------------------
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # 2. Gate: fail fast if the repo key is expiring soon
+      # ------------------------------------------------------------------
+      - name: Check repo key expiration
+        uses: ./actions/check-key-expiration
+        with:
+          key-armored-b64: ${{ secrets.GPG_REPO_KEY_B64 }}
+          warn-days: '30'
+
+      # ------------------------------------------------------------------
+      # 3. Generate a short-lived ephemeral key certified by the repo key
+      # ------------------------------------------------------------------
+      - name: Generate ephemeral release key
+        id: ephemeral
+        uses: ./actions/gpg-ephemeral-key
+        with:
+          cert-key-armored-b64: ${{ secrets.GPG_REPO_CERT_KEY_B64 }}
+          name:    '${{ github.repository }} Release'
+          comment: 'ephemeral key for ${{ github.ref_name }}'
+          email:   'release@packages.openchami.org'
+          expire:  '1d'
+
+      # ------------------------------------------------------------------
+      # 4. Set up RPM signing using the ephemeral key as the direct signer
+      # ------------------------------------------------------------------
+      - name: Setup RPM signing (ephemeral key)
+        id: rpm_signing
+        uses: ./actions/setup-rpm-signing
+        with:
+          repo-key-armored-b64:  ${{ secrets.GPG_REPO_KEY_B64 }}
+          ephemeral-fingerprint: ${{ steps.ephemeral.outputs.ephemeral-fingerprint }}
+          public-key-output:     repo-public.asc
+
+      # ------------------------------------------------------------------
+      # 5. Build RPMs  (adapt this step to your build system)
+      # ------------------------------------------------------------------
+      - name: Build RPMs
+        run: |
+          # Replace this block with your actual build commands, e.g.:
+          #   make rpm
+          #   rpmbuild -ba my-package.spec
+          echo "TODO: replace with your build commands"
+          # For demonstration, create a dummy directory so later steps don't fail.
+          mkdir -p dist/
+
+      # ------------------------------------------------------------------
+      # 6. Sign each RPM with the ephemeral key
+      # ------------------------------------------------------------------
+      - name: Sign RPMs
+        run: |
+          EPHEM_FPR="${{ steps.ephemeral.outputs.ephemeral-fingerprint }}"
+          shopt -s nullglob
+          rpms=( dist/*.rpm )
+          if [[ ${#rpms[@]} -eq 0 ]]; then
+            echo "No RPM files found in dist/ — skipping signing step."
+            exit 0
+          fi
+          for rpm in "${rpms[@]}"; do
+            echo "Signing: $rpm"
+            rpm --define "_gpg_name ${EPHEM_FPR}" --addsign "$rpm"
+          done
+
+      # ------------------------------------------------------------------
+      # 7. Export and decode the ephemeral public key for release artifacts
+      # ------------------------------------------------------------------
+      - name: Export ephemeral public key
+        run: |
+          printf '%s' '${{ steps.ephemeral.outputs.ephemeral-public-key }}' \
+            | base64 -d > ephemeral-public.asc
+
+      # ------------------------------------------------------------------
+      # 8. Verify the full chain before publishing (optional but recommended)
+      # ------------------------------------------------------------------
+      - name: Verify trust chain
+        if: hashFiles('dist/*.rpm') != ''
+        run: |
+          # Import master public key if available as a secret.
+          if [ -n '${{ secrets.MASTER_PUBLIC_ASC }}' ]; then
+            printf '%s' '${{ secrets.MASTER_PUBLIC_ASC }}' > master-public.asc
+          else
+            echo "MASTER_PUBLIC_ASC secret not set; skipping master chain check."
+            exit 0
+          fi
+          shopt -s nullglob
+          rpms=( dist/*.rpm )
+          rpm_args=()
+          for r in "${rpms[@]}"; do rpm_args+=(--rpm "$r"); done
+
+          scripts/verify-chain.sh \
+            --master    master-public.asc \
+            --repo      repo-public.asc \
+            --ephemeral ephemeral-public.asc \
+            "${rpm_args[@]}"
+
+      # ------------------------------------------------------------------
+      # 9. Publish release with public keys attached for user verification
+      # ------------------------------------------------------------------
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          files: |
+            dist/*.rpm
+            repo-public.asc
+            ephemeral-public.asc
+          body: |
+            ## GPG Signature Verification
+
+            Each RPM in this release is signed with a short-lived ephemeral key that
+            is certified by the repository signing key, which is itself certified by
+            the OpenCHAMI offline master key.
+
+            ### Trust chain
+
+            ```
+            offline master key
+                └─[certifies]─> repo key
+                                    └─[certifies]─> ephemeral key (${{ github.ref_name }})
+                                                        └─[signs]─> RPM files
+            ```
+
+            ### How to verify
+
+            1. Download `repo-public.asc` and `ephemeral-public.asc` from this release.
+            2. Import both keys:
+               ```bash
+               gpg --import repo-public.asc ephemeral-public.asc
+               ```
+            3. Verify each RPM:
+               ```bash
+               rpm --checksig *.rpm
+               ```
+            4. For full chain verification (requires the master public key):
+               ```bash
+               scripts/verify-chain.sh \
+                 --master    master-public.asc \
+                 --repo      repo-public.asc \
+                 --ephemeral ephemeral-public.asc \
+                 --rpm       *.rpm
+               ```
