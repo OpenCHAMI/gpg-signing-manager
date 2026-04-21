@@ -100,7 +100,7 @@ TEMP_GNUPGHOME_LINKS=()
 cleanup_temp_gnupghome_links() {
   local link
   for link in "${TEMP_GNUPGHOME_LINKS[@]:-}"; do
-    [[ -L "$link" ]] && rm -f "$link"
+    ( [[ -L "$link" ]] && rm -f "$link" ) || true
   done
 }
 
