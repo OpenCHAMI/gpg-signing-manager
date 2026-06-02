@@ -257,9 +257,16 @@ jobs:
       - name: Check repo key expiration
         uses: ./actions/check-key-expiration
         with:
-          key-armored-b64: ${{ secrets.GPG_REPO_KEY_B64 }}
+          # Backward-compatible fallback while migrating old repos.
+          key-armored-b64: ${{ secrets.GPG_REPO_KEY_B64 || secrets.GPG_SUBKEY_B64 }}
+          secret-name: 'GPG_REPO_KEY_B64'
+          legacy-secret-name: 'GPG_SUBKEY_B64'
           warn-days: '30'
 ```
+
+If this action fails with `Input 'key-armored-b64' is empty`, the expected
+secret is missing.  Set `GPG_REPO_KEY_B64` (preferred) or temporarily keep
+`GPG_SUBKEY_B64` wired through the fallback expression above.
 
 ---
 
@@ -449,5 +456,4 @@ Use the release workflow as the harness:
 ```bash
 act workflow_dispatch -W .github/workflows/example-release.yml
 ```
-
 

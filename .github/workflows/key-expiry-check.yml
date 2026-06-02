@@ -15,5 +15,8 @@ jobs:
       - name: Check repo key expiration
         uses: ./actions/check-key-expiration
         with:
-          key-armored-b64: ${{ secrets.GPG_REPO_KEY_B64 }}
+          # Prefer the new secret name, but keep legacy compatibility.
+          key-armored-b64: ${{ secrets.GPG_REPO_KEY_B64 || secrets.GPG_SUBKEY_B64 }}
+          secret-name: 'GPG_REPO_KEY_B64'
+          legacy-secret-name: 'GPG_SUBKEY_B64'
           warn-days: '30'
