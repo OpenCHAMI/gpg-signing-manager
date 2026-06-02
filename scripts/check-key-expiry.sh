@@ -126,7 +126,7 @@ if ! key_rows="$(gpg --batch --with-colons --fingerprint --list-secret-keys 2>/d
   exit 1
 fi
 
-while IFS='|' read -r rec_type keyid fpr created expires capabilities uid; do
+while IFS='|' read -r rec_type keyid fpr created expires uid; do
   [[ -z "$rec_type" ]] && continue
   found=1
   if [[ "$rec_type" == "sec" ]]; then
