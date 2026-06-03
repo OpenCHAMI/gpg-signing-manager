@@ -71,7 +71,7 @@ runs:
         import_log="$GNUPGHOME/import-error.log"
 
         if ! printf '%s' "$KEY_ARMORED_B64" | base64 -d > signing-key.asc 2>"$decode_log"; then
-          decode_msg="$(tr -d '\n' < "$decode_log")"
+          decode_msg="$(tr '\n' ' ' < "$decode_log" | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')"
           echo "::error::Failed to decode key-armored-b64 as base64."
           [[ -n "$decode_msg" ]] && echo "::error::base64 decoder output: ${decode_msg}"
           echo "::notice::Re-export the secret payload and store it as ${SECRET_NAME}."
