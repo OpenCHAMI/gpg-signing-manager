@@ -13,7 +13,7 @@ Options:
   --gnupghome DIR             GnuPG home directory, default: ~/.gnupg
   --threshold-days N          Default: 30
   --github-annotations        Emit ::error:: / ::warning:: / ::notice:: lines
-                             for GitHub Actions logs
+                              for GitHub Actions logs
   --help                      Show this help text
 USAGE
 }
