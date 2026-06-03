@@ -79,7 +79,7 @@ runs:
         fi
 
         if ! gpg --batch --import signing-key.asc >/dev/null 2>"$import_log"; then
-          import_msg="$(tr -d '\n' < "$import_log")"
+          import_msg="$(tr '\n' ' ' < "$import_log" | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')"
           echo "::error::Failed to import decoded key material into a temporary GnuPG keyring."
           [[ -n "$import_msg" ]] && echo "::error::gpg import output: ${import_msg}"
           echo "::notice::Ensure ${SECRET_NAME} contains a secret key export (not a public key)."
